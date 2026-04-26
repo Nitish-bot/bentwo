@@ -14,17 +14,12 @@
 		"@tailwindcss/vite": "4.2.2",
 		"@untitledui/icons": "0.0.22",
 		"react": "19.2.4",
-		"react-aria-components": "^1.16.0",
 		"react-dom": "19.2.4",
-		"react-router-dom": "7.14.1",
-		"tailwind-merge": "^3.5.0",
-		"tailwindcss": "4.2.2",
-		"tailwindcss-animate": "1.0.7",
-		"tailwindcss-react-aria-components": "2.1.0"
+		"react-router-dom": "7.14.1"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "2.4.12",
-		"@types/node": "24.12.2",
+		"@types/bun": "24.12.2",
 		"@types/react": "19.2.14",
 		"@types/react-dom": "19.2.3",
 		"@vitejs/plugin-react": "6.0.1",
