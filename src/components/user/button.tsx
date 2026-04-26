@@ -4,9 +4,9 @@
 // }
 
 export default function UButton() {
-  return (
-    <div>
-      <button type="button"></button>
-    </div>
-  )
+	return (
+		<div>
+			<button type="button"></button>
+		</div>
+	);
 }

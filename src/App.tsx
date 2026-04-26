@@ -3,10 +3,10 @@ import { BrowserRouter, Route, Routes } from "react-router-dom";
 function App() {
 	return (
 		<BrowserRouter>
-				<Routes>
-					<Route path="/" element={null} />
-					<Route path="*" />
-				</Routes>
+			<Routes>
+				<Route path="/" element={null} />
+				<Route path="*" />
+			</Routes>
 		</BrowserRouter>
 	);
 }
