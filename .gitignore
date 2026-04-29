@@ -13,9 +13,6 @@ dist-ssr
 .next
 *.local
 
-# Reference / example projects
-nblog/
-
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
