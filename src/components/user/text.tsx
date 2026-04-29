@@ -24,6 +24,7 @@ export const UText = React.forwardRef<HTMLDivElement, UTextProps>(
 		const [selectedIndex, setSelectedIndex] = useState(0);
 		const [dropdownPos, setDropdownPos] = useState({ top: 0, left: 0 });
 		const editableRef = useRef<HTMLDivElement | null>(null);
+		const prevIsEditingRef = useRef(true);
 		const hasTypedRef = useRef(false);
 
 		const {
@@ -40,22 +41,43 @@ export const UText = React.forwardRef<HTMLDivElement, UTextProps>(
 
 		const { actions: editorActions, query } = useEditor();
 
-		// Auto-focus on mount (editor starts with text focused)
+		// Single ref callback — register drag once, persist DOM ref
+		const setDomRef = useCallback(
+			(dom: HTMLDivElement | null) => {
+				if (typeof ref === "function") {
+					ref(dom);
+				} else if (ref) {
+					ref.current = dom;
+				}
+				if (dom) {
+					editableRef.current = dom;
+					connect(drag(dom));
+				}
+			},
+			[ref, connect, drag],
+		);
+
+		// Sync saved text and focus when transitioning into edit mode
 		useEffect(() => {
 			const el = editableRef.current;
-			if (el) {
-				el.focus();
-				// Place cursor at end
-				const range = document.createRange();
-				range.selectNodeContents(el);
-				range.collapse(false);
-				const sel = window.getSelection();
-				sel?.removeAllRanges();
-				sel?.addRange(range);
+			if (isEditing && el) {
+				if (!prevIsEditingRef.current) {
+					el.textContent = text;
+					el.focus();
+					const range = document.createRange();
+					range.selectNodeContents(el);
+					range.collapse(false);
+					const sel = window.getSelection();
+					sel?.removeAllRanges();
+					sel?.addRange(range);
+				}
+				prevIsEditingRef.current = true;
+			} else {
+				prevIsEditingRef.current = false;
 			}
-		}, []);
+		}, [isEditing, text]);
 
-		// Enter edit mode when selected
+		// Enter edit mode when node becomes selected
 		useEffect(() => {
 			if (selected && !isEditing) {
 				setIsEditing(true);
@@ -71,10 +93,8 @@ export const UText = React.forwardRef<HTMLDivElement, UTextProps>(
 				const siblings = query.node(parentId).get().data.nodes;
 				const index = siblings.indexOf(id);
 
-				// Delete current node
 				editorActions.delete(id);
 
-				// Create node tree based on component type
 				// biome-ignore lint/suspicious/noExplicitAny: Craft.js internal API
 				const parsed = (query as any).parseReactElement(
 					componentType === "UCard" ? (
@@ -85,9 +105,10 @@ export const UText = React.forwardRef<HTMLDivElement, UTextProps>(
 						<UButton label="Button" />
 					),
 				);
-				const nodeTree = parsed.toNodeTree ? parsed.toNodeTree() : parsed;
+				const nodeTree = parsed.toNodeTree
+					? parsed.toNodeTree()
+					: parsed;
 
-				// Add at same position
 				editorActions.addNodeTree(nodeTree, parentId, index);
 			},
 			[id, query, editorActions],
@@ -99,7 +120,6 @@ export const UText = React.forwardRef<HTMLDivElement, UTextProps>(
 
 			const currentText = el.textContent ?? "";
 
-			// Mark that user has typed real content
 			if (currentText.length > 0) {
 				hasTypedRef.current = true;
 				setProp((props: Record<string, unknown>) => {
@@ -107,7 +127,6 @@ export const UText = React.forwardRef<HTMLDivElement, UTextProps>(
 				});
 			}
 
-			// Check for slash command
 			const lastSlashIndex = currentText.lastIndexOf("/");
 			if (lastSlashIndex !== -1) {
 				const afterSlash = currentText.slice(lastSlashIndex + 1);
@@ -167,11 +186,29 @@ export const UText = React.forwardRef<HTMLDivElement, UTextProps>(
 							replaceWithComponent(filtered[selectedIndex]);
 						}
 					}
+				} else if (e.key === "Enter" && !e.shiftKey) {
+					e.preventDefault();
+					const el = editableRef.current;
+					if (!el) return;
+					const sel = window.getSelection();
+					if (sel && sel.rangeCount > 0) {
+						const range = sel.getRangeAt(0);
+						const br = document.createElement("br");
+						range.deleteContents();
+						range.insertNode(br);
+						// Move cursor after the <br>
+						range.setStartAfter(br);
+						range.setEndAfter(br);
+						sel.removeAllRanges();
+						sel.addRange(range);
+					}
+					// Trigger input to save the newline
+					handleInput();
 				} else if (e.key === "Escape") {
 					setIsEditing(false);
 				}
 			},
-			[isSlashMode, slashFilter, selectedIndex, replaceWithComponent],
+			[isSlashMode, slashFilter, selectedIndex, replaceWithComponent, handleInput],
 		);
 
 		const handleSlashSelect = useCallback(
@@ -181,59 +218,45 @@ export const UText = React.forwardRef<HTMLDivElement, UTextProps>(
 			[replaceWithComponent],
 		);
 
+		const handleMouseDown = useCallback(
+			(e: React.MouseEvent<HTMLDivElement>) => {
+				if (!isEditing) {
+					// Prevent parent container selection and drag start
+					e.stopPropagation();
+					e.preventDefault();
+					setIsEditing(true);
+				}
+			},
+			[isEditing],
+		);
+
 		return (
 			<div className="relative">
-				{isEditing ? (
-					// biome-ignore lint/a11y/noStaticElementInteractions: contentEditable handles interactivity
-					<div
-						ref={(dom) => {
-							if (typeof ref === "function") {
-								ref(dom);
-							} else if (ref) {
-								ref.current = dom;
-							}
-							if (dom) {
-								editableRef.current = dom;
-							}
-						}}
-						contentEditable
-						suppressContentEditableWarning
-						onInput={handleInput}
-						onBlur={handleBlur}
-						onKeyDown={handleKeyDown}
-						data-placeholder={PLACEHOLDER}
-						className={cn(
-							"rounded-lg px-3 py-2 outline-none ring-2 ring-blue-300",
-							"empty:before:pointer-events-none empty:before:text-muted-foreground",
-							"empty:before:content-[attr(data-placeholder)]",
-							className,
-						)}
-						style={{ minHeight: "2.5rem" }}
-					/>
-				) : (
-					<div
-						ref={(dom) => {
-							if (typeof ref === "function") {
-								ref(dom);
-							} else if (ref) {
-								ref.current = dom;
-							}
-							if (dom) {
-								connect(drag(dom));
-							}
-						}}
-						className={cn(
-							"rounded-lg px-3 py-2 transition-colors",
-							selected && "ring-2 ring-blue-500",
-							hovered && !selected && "bg-gray-100",
-							!text && "text-muted-foreground",
-							className,
-						)}
-						style={{ minHeight: "2.5rem" }}
-					>
-						{text || PLACEHOLDER}
-					</div>
-				)}
+				<div
+					ref={setDomRef}
+					contentEditable={isEditing}
+					suppressContentEditableWarning
+					onMouseDown={handleMouseDown}
+					onInput={handleInput}
+					onBlur={handleBlur}
+					onKeyDown={handleKeyDown}
+					data-placeholder={PLACEHOLDER}
+					className={cn(
+						"rounded-lg px-3 py-2 transition-colors",
+						isEditing
+							? "outline-none ring-2 ring-blue-300 cursor-text"
+							: "cursor-text",
+						!isEditing && selected && "ring-2 ring-blue-500",
+						!isEditing && hovered && !selected && "bg-gray-100",
+						!isEditing && !text && "text-muted-foreground",
+						"empty:before:pointer-events-none empty:before:text-muted-foreground",
+						"empty:before:content-[attr(data-placeholder)]",
+						className,
+					)}
+					style={{ minHeight: "2.5rem" }}
+				>
+					{!isEditing ? text || PLACEHOLDER : undefined}
+				</div>
 				{isSlashMode &&
 					isEditing &&
 					createPortal(

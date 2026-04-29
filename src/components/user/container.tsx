@@ -32,6 +32,8 @@ export const UContainer = React.forwardRef<HTMLDivElement, UContainerProps>(
 				}}
 				className={cn(
 					"flex min-h-[40px] flex-col",
+					"border-2 border-dashed border-gray-400 bg-card",
+					"max-w-4xl mx-auto px-6 py-4",
 					selected && "ring-2 ring-blue-500",
 					className,
 				)}
