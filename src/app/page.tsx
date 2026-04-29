@@ -1,9 +1,4 @@
 import Link from "next/link";
-import { Button } from "@/components/ui/button";
-import { UButton } from "@/components/user/button";
-import { UCard } from "@/components/user/card";
-import { UContainer } from "@/components/user/container";
-import { UText } from "@/components/user/text";
 
 export default function HomePage() {
 	return (
@@ -18,17 +13,6 @@ export default function HomePage() {
 			>
 				Open Editor
 			</Link>
-
-			<div className="mt-8 flex flex-col gap-4">
-				<h2 className="text-lg font-semibold">Component Smoke Test</h2>
-				<Button>Click me </Button>
-				<UText />
-				<UCard title="Test Card" description="This is a test card component" />
-				<UButton>Test Button</UButton>
-				<UContainer>
-					<p>Container content</p>
-				</UContainer>
-			</div>
 		</main>
 	);
 }
