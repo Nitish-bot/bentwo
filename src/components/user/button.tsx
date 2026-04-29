@@ -1,12 +1,8 @@
-// type UButtonProps = {
-//   text: string,
-//   fontSize: number,
-// }
+import type { ComponentPropsWithoutRef } from "react";
+import { Button } from "@/components/ui/button";
 
-export default function UButton() {
-	return (
-		<div>
-			<button type="button"></button>
-		</div>
-	);
-}
+type UButtonProps = ComponentPropsWithoutRef<typeof Button>;
+
+export const UButton = (props: UButtonProps) => {
+	return <Button {...props} />;
+};

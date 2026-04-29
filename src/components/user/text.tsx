@@ -1,12 +1,5 @@
-type UTextProps = {
-	text: string;
-	fontSize: number;
-};
+import { Input } from "@/components/ui/input";
 
-export default function UText({ text, fontSize }: UTextProps) {
-	return (
-		<div>
-			<p style={{ fontSize }}>{text}</p>
-		</div>
-	);
+export function UText() {
+	return <Input placeholder="Enter '/' for components" />;
 }
