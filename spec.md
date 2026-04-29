@@ -123,58 +123,60 @@ Each page stores its entire Craft.js tree as a single JSON blob in `pages.conten
 
 ### Phase 1 — Craft.js Core Foundation
 
-**Goal:** The `/editor` route renders a functioning Craft.js canvas with a default text node. The node is selectable and serializable.
+**Goal:** The `/editor` route renders a functioning Craft.js canvas with a default text node. The node is selectable, editable, and serializable.
 
 **Scope:**
 - Install `@craftjs/core` and its peer dependencies (`@craftjs/layers` is deferred).
 - Build the editor shell component hierarchy:
   ```
-  <Editor resolver={resolver}>
+  <Editor resolver={resolver} onRender={RenderNode}>
     <Frame>
-      <Element is="div" canvas={true}>
+      <Element is={UContainer} canvas={true}>
         {/* default nodes */}
       </Element>
     </Frame>
   </Editor>
   ```
-- Convert `UText` from a plain React component to a Craft.js **User Component**:
+- **Portal-based selection:** Use `Editor onRender={RenderNode}` to render selection borders and toolbars via `ReactDOM.createPortal`. This prevents clipping and keeps component code clean.
+- **Root canvas is `UContainer`:** Not a plain `div`. This gives us layout primitives (direction, gap, padding) from day one.
+- Convert `UText` to a Craft.js **User Component**:
   - Wrap with `React.forwardRef`.
   - Use `useNode()` hook inside.
   - Attach `connectors.connect` and `connectors.drag` to the outer DOM element.
   - Define static `.craft` property with default `props` and `rules`.
-  - Use `setProp` for prop mutations.
+  - Use `contentEditable` for inline text editing (single-click to edit, Escape/blur to save).
+  - During editing, skip `connect(drag(ref))` so typing doesn't trigger drag.
 - Convert `UCard`, `UButton` to User Components with `.craft` defaults.
 - Build a `resolver` object mapping component names to User Components.
-- Render a default tree: one `UText` node with placeholder text.
-- Add visual selection/hover states:
-  - `isSelected` → blue ring border.
-  - `isHovered` → subtle gray background tint.
-  - Only one node selected at a time.
+- Render a default tree: one `UText` node inside a `UContainer` root.
 
 **Definition of Done:**
 - [ ] `/editor` renders without runtime errors.
-- [ ] A default text node appears on the canvas.
-- [ ] Clicking the text shows a blue selection ring.
-- [ ] Hovering the text shows a hover state.
+- [ ] A default text node appears on the canvas inside a `UContainer` root.
+- [ ] Clicking the text shows a blue selection ring (via portal, not inline).
+- [ ] Hovering the text shows a hover state (via portal).
+- [ ] Clicking the text enters edit mode (single-click).
+- [ ] Typing updates the text content.
+- [ ] Escape or blur saves text to props.
 - [ ] Calling `query.serialize()` returns a JSON tree with the text node and its props.
 - [ ] `UCard` and `UButton` are registered in the resolver and can be referenced in serialized trees.
 
 **Open Questions:**
-- 🔬 Does `@craftjs/core` support React 19? If not, what is the compatibility workaround?
-- 🔬 How does Craft.js handle SSR in Next.js? The `<Editor>` must likely be wrapped in a `"use client"` boundary.
+- 🔬 Does `@craftjs/core` support React 19? If not, what is the compatibility workaround? (Answer: Yes, supported as of PR #726. Warning #744 is cosmetic only.)
+- 🔬 How does Craft.js handle SSR in Next.js? The `<Editor>` must be wrapped in a `"use client"` boundary.
 
 ---
 
 ### Phase 2 — The Slash Command
 
-**Goal:** Typing `/` inside the default text node opens a command palette. Selecting an item replaces the current node with that component type.
+**Goal:** Typing `/` inside an editable text node opens a command palette. Selecting an item replaces the current node with that component type.
 
 **Scope:**
-- Make `UText` editable inline. Use a controlled `contentEditable` div or `<input>`.
-- Track the current text value in the node's props via `setProp`.
-- On `onKeyDown` in the text input:
+- `UText` uses `contentEditable` (from Phase 1). Single-click enters edit mode.
+- Track the current text value in the node's props via `setProp` on `onInput` or `onBlur`.
+- On `onKeyDown` in the contentEditable element:
   - If key is `/`, record that slash-command mode is active.
-  - If key is `Escape`, cancel slash-command mode.
+  - If key is `Escape`, cancel slash-command mode and exit edit mode.
   - If key is `Enter` or `ArrowDown` while in slash mode, navigate dropdown.
 - Render a dropdown menu below the cursor position when slash mode is active.
 - Dropdown lists all available component types: `Text`, `Card`, `Button`.
@@ -187,7 +189,7 @@ Each page stores its entire Craft.js tree as a single JSON blob in `pages.conten
 - Support undo: the delete+add sequence must be a single undoable action (or two sequential undos must restore original state).
 
 **Definition of Done:**
-- [ ] Typing `/` in the text node opens a dropdown.
+- [ ] Typing `/` in an editable text node opens a dropdown.
 - [ ] Dropdown lists Card, Button, Text.
 - [ ] Typing `/bu` filters to Button.
 - [ ] Selecting Button replaces the text node with a Button component at the exact same position.
@@ -240,8 +242,8 @@ Each page stores its entire Craft.js tree as a single JSON blob in `pages.conten
 
 **Scope:**
 - Build a `SettingsPanel` component.
-- It accepts: `componentType`, `currentProps`, `onPropChange(propKey, value)`.
-- It renders form controls based on a **prop schema** defined per component type.
+- **Data layer:** Settings UI components are stored in `.craft.related.toolbar` per component (Craft.js convention).
+- The editor reads `state.nodes[selectedId]?.related` to find the settings component and renders it in a floating panel (not a sidebar).
 - Position the panel using `getBoundingClientRect()` of the selected DOM node. Use `fixed` positioning offset to the right of the node. If off-screen, flip to left side.
 - Panel closes when: user clicks outside, user presses Escape, user selects a different node.
 - Define prop schemas:
@@ -249,7 +251,7 @@ Each page stores its entire Craft.js tree as a single JSON blob in `pages.conten
   - **UCard:** `title` (string), `description` (string).
   - **UButton:** `label` (string), `href` (string), `variant` (enum: default/outline/ghost).
 - Use shadcn/ui form controls: `Input`, `Slider`, `Select`.
-- Every prop change calls `onPropChange`, which internally calls `setProp` via Craft.js. This updates the node prop and re-renders the component.
+- Every prop change calls `setProp` via Craft.js. This updates the node prop and re-renders the component.
 
 **Definition of Done:**
 - [ ] Clicking a component opens the settings panel next to it.
@@ -474,7 +476,8 @@ Each page stores its entire Craft.js tree as a single JSON blob in `pages.conten
   - If node has `isCanvas`, render children as a flex container (respecting layout direction).
 - Preview mode in editor:
   - Toggle button in bottom bar: "Preview".
-  - When active, render the current page tree through `PublicRenderer` instead of `<Frame>`.
+  - Option A: Set `enabled=false` in Craft.js to hide editor chrome (toolbars, selection) while keeping the tree rendered.
+  - Option B: Render the current page tree through `PublicRenderer` instead of `<Frame>`.
   - Add a "Back to editor" button to exit preview.
   - Preview is read-only.
 - Responsive verification:
@@ -555,12 +558,18 @@ Each page stores its entire Craft.js tree as a single JSON blob in `pages.conten
   - Add `direction: "row" | "column"` prop to `UContainer`.
   - Render children in a flex container with `flex-direction` set accordingly.
   - Container settings panel: direction toggle.
-- **12c — Arbitrary Grid Research:**
+- **12c — Auto-Direction (Research):**
+  - Investigate whether Craft.js Positioner can detect if a drop is to the right vs. below a sibling.
+  - If dragged to the right of an element: parent container auto-switches to `direction="row"`.
+  - If dragged below: create a new nested container with `direction="column"`.
+  - This enables infinite stacking in any direction without manual direction toggles.
+  - **Decision point:** If feasible, implement auto-direction. If not, rely on manual direction toggle from 12b.
+- **12d — Arbitrary Grid Research:**
   - Investigate whether Craft.js supports multiple independent drop zones per component.
   - Investigate custom `Positioner` behavior for grid-like layouts.
   - Determine if arbitrary row/column placement is feasible within Craft.js's architecture.
-  - **Decision point:** If feasible, proceed to 12d. If not, document the limitation and define the upgrade path (e.g., custom DnD library for containers, or defer grid to v2).
-- **12d — Extended Props (if grid is feasible):**
+  - **Decision point:** If feasible, proceed to 12e. If not, document the limitation and define the upgrade path.
+- **12e — Extended Props:**
   - Add `gap`, `justifyContent`, `alignItems`, `padding`, `backgroundColor`, `borderRadius`.
   - Settings panel reflects these props.
 
@@ -569,6 +578,7 @@ Each page stores its entire Craft.js tree as a single JSON blob in `pages.conten
 - [ ] Components can be reordered within `UContainer`.
 - [ ] `direction: row` renders children horizontally.
 - [ ] `direction: column` renders children vertically (default).
+- [ ] Auto-direction behavior researched and decision recorded.
 - [ ] Research findings are documented in this spec (update Phase 12 with results).
 - [ ] If grid is deferred, the decision and rationale are recorded.
 
@@ -576,6 +586,7 @@ Each page stores its entire Craft.js tree as a single JSON blob in `pages.conten
 - 🔬 **This is the primary research phase.** The entire feasibility of the container system depends on Craft.js's support for nested canvases. Prototype first, decide second.
 - 🔬 Does nested `<Element canvas={true}>` create a separate drag context, or is it unified with the parent?
 - 🔬 What happens when dragging a node from a container to the root canvas? Does `actions.move()` handle cross-parent moves?
+- 🔬 Can Craft.js Positioner distinguish between "to the right" vs "below" drops?
 
 ---
 
@@ -798,7 +809,8 @@ bentwo/
 │   │   ├── button.tsx
 │   │   └── container.tsx
 │   ├── editor/
-│   │   ├── EditorShell.tsx     # Editor layout shell
+│   │   ├── EditorCanvas.tsx    # Craft.js Editor + Frame wrapper
+│   │   ├── RenderNode.tsx      # Portal-based selection/toolbar renderer
 │   │   ├── BottomBar.tsx       # Floating bottom bar
 │   │   ├── SettingsPanel.tsx   # Floating props panel
 │   │   ├── SlashCommand.tsx    # / dropdown

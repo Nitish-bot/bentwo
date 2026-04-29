@@ -11,6 +11,7 @@
 		"check:fix": "bunx --bun @biomejs/biome check --write"
 	},
 	"dependencies": {
+		"@craftjs/core": "^0.2.12",
 		"@fontsource-variable/nunito-sans": "^5.2.7",
 		"@instantdb/react": "^1.0.17",
 		"@phosphor-icons/react": "^2.1.10",

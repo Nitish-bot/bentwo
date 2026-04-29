@@ -86,6 +86,51 @@ If a review surfaces a new convention (e.g., "don't touch shadcn components"), a
 
 The rule: **If it changed in code, it must change in docs.**
 
+## 7. Craft.js Patterns (from nblog/ research)
+
+These patterns were validated against a working Craft.js + Next.js reference implementation.
+
+### Portal-Based Selection / Toolbar
+
+**Use `Editor onRender={RenderNode}` instead of inline selection rings.**
+
+- RenderNode uses `ReactDOM.createPortal` to draw selection borders and toolbars outside the component tree.
+- This prevents borders from being clipped by `overflow: hidden` parents and avoids affecting component layout.
+- Position is tracked via `ResizeObserver` + `getBoundingClientRect` on the node's DOM element.
+- Selection UI is centralized — component code stays clean.
+
+### Text Editing via contentEditable
+
+**Inline text editing uses `contentEditable`, not `<input>`.**
+
+- Single-click enters edit mode (not double-click).
+- `Escape` or `onBlur` saves text to props via `setProp`.
+- During editing, skip `connect(drag(ref))` so typing doesn't trigger drag.
+- Use `suppressContentEditableWarning` to silence React warnings.
+
+### Settings Panel Data Layer
+
+**Settings UI components live in `.craft.related.toolbar`.**
+
+- Each component defines its settings form as a React component attached to `.craft.related.toolbar`.
+- The editor reads `state.nodes[selectedId]?.related` to find the settings component.
+- Whether rendered in a sidebar (nblog/) or floating panel (our design), the data layer is the same.
+
+### Root Canvas
+
+**The root canvas should be a `UContainer`, not a plain `<div>`.**
+
+- This gives us layout primitives (direction, gap, padding) immediately.
+- Plain `div` canvas defers layout decisions to Phase 12 unnecessarily.
+
+### React 19 Compatibility
+
+**Do not suppress Craft.js React 19 warnings.**
+
+- The `"Accessing element.ref was removed in React 19"` warning is a known upstream issue (#744).
+- It only appears on first load and does not affect functionality.
+- Suppressing it hides real errors that might appear in the same channel.
+
 ---
 
 **These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.
