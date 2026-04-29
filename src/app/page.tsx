@@ -20,7 +20,7 @@ export default function HomePage() {
 			</Link>
 
 			<div className="mt-8 flex flex-col gap-4">
-        <h2 className="text-lg font-semibold">Component Smoke Test</h2>
+				<h2 className="text-lg font-semibold">Component Smoke Test</h2>
 				<Button>Click me </Button>
 				<UText />
 				<UCard title="Test Card" description="This is a test card component" />
