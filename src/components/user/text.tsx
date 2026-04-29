@@ -24,7 +24,7 @@ export const UText = React.forwardRef<HTMLDivElement, UTextProps>(
 		const [selectedIndex, setSelectedIndex] = useState(0);
 		const [dropdownPos, setDropdownPos] = useState({ top: 0, left: 0 });
 		const editableRef = useRef<HTMLDivElement | null>(null);
-		const prevIsEditingRef = useRef(true);
+		const prevIsEditingRef = useRef(false);
 		const hasTypedRef = useRef(false);
 
 		const {
@@ -41,7 +41,7 @@ export const UText = React.forwardRef<HTMLDivElement, UTextProps>(
 
 		const { actions: editorActions, query } = useEditor();
 
-		// Single ref callback — register drag once, persist DOM ref
+		// Single ref callback — connect and drag once on mount
 		const setDomRef = useCallback(
 			(dom: HTMLDivElement | null) => {
 				if (typeof ref === "function") {
@@ -57,12 +57,16 @@ export const UText = React.forwardRef<HTMLDivElement, UTextProps>(
 			[ref, connect, drag],
 		);
 
-		// Sync saved text and focus when transitioning into edit mode
+		// Sync saved text into DOM and focus when entering edit mode
 		useEffect(() => {
 			const el = editableRef.current;
 			if (isEditing && el) {
-				if (!prevIsEditingRef.current) {
+				// Always sync text if it differs (handles undo/redo while editing)
+				if (el.textContent !== text) {
 					el.textContent = text;
+				}
+				// Focus and place cursor at end only on transition into edit mode
+				if (!prevIsEditingRef.current) {
 					el.focus();
 					const range = document.createRange();
 					range.selectNodeContents(el);
@@ -77,12 +81,7 @@ export const UText = React.forwardRef<HTMLDivElement, UTextProps>(
 			}
 		}, [isEditing, text]);
 
-		// Enter edit mode when node becomes selected
-		useEffect(() => {
-			if (selected && !isEditing) {
-				setIsEditing(true);
-			}
-		}, [selected, isEditing]);
+
 
 		const replaceWithComponent = useCallback(
 			(componentType: string) => {
@@ -118,7 +117,8 @@ export const UText = React.forwardRef<HTMLDivElement, UTextProps>(
 			const el = editableRef.current;
 			if (!el) return;
 
-			const currentText = el.textContent ?? "";
+			// innerText preserves line breaks from <br> and block elements
+			const currentText = el.innerText ?? "";
 
 			if (currentText.length > 0) {
 				hasTypedRef.current = true;
@@ -150,7 +150,7 @@ export const UText = React.forwardRef<HTMLDivElement, UTextProps>(
 		const handleBlur = useCallback(() => {
 			const el = editableRef.current;
 			if (el) {
-				const newText = el.textContent ?? "";
+				const newText = el.innerText ?? "";
 				setProp((props: Record<string, unknown>) => {
 					props.text = newText;
 				});
@@ -187,28 +187,14 @@ export const UText = React.forwardRef<HTMLDivElement, UTextProps>(
 						}
 					}
 				} else if (e.key === "Enter" && !e.shiftKey) {
-					e.preventDefault();
-					const el = editableRef.current;
-					if (!el) return;
-					const sel = window.getSelection();
-					if (sel && sel.rangeCount > 0) {
-						const range = sel.getRangeAt(0);
-						const br = document.createElement("br");
-						range.deleteContents();
-						range.insertNode(br);
-						// Move cursor after the <br>
-						range.setStartAfter(br);
-						range.setEndAfter(br);
-						sel.removeAllRanges();
-						sel.addRange(range);
-					}
-					// Trigger input to save the newline
-					handleInput();
+					// Let browser handle Enter naturally — it inserts <div> or <br>
+					// innerText will preserve the line break on next input/blur
+					// No preventDefault so caret moves to new line correctly
 				} else if (e.key === "Escape") {
 					setIsEditing(false);
 				}
 			},
-			[isSlashMode, slashFilter, selectedIndex, replaceWithComponent, handleInput],
+			[isSlashMode, slashFilter, selectedIndex, replaceWithComponent],
 		);
 
 		const handleSlashSelect = useCallback(
@@ -218,12 +204,11 @@ export const UText = React.forwardRef<HTMLDivElement, UTextProps>(
 			[replaceWithComponent],
 		);
 
-		const handleMouseDown = useCallback(
+		const handleClick = useCallback(
 			(e: React.MouseEvent<HTMLDivElement>) => {
 				if (!isEditing) {
-					// Prevent parent container selection and drag start
+					// Prevent parent container selection
 					e.stopPropagation();
-					e.preventDefault();
 					setIsEditing(true);
 				}
 			},
@@ -236,7 +221,7 @@ export const UText = React.forwardRef<HTMLDivElement, UTextProps>(
 					ref={setDomRef}
 					contentEditable={isEditing}
 					suppressContentEditableWarning
-					onMouseDown={handleMouseDown}
+					onClick={handleClick}
 					onInput={handleInput}
 					onBlur={handleBlur}
 					onKeyDown={handleKeyDown}
@@ -253,7 +238,7 @@ export const UText = React.forwardRef<HTMLDivElement, UTextProps>(
 						"empty:before:content-[attr(data-placeholder)]",
 						className,
 					)}
-					style={{ minHeight: "2.5rem" }}
+					style={{ minHeight: "2.5rem", whiteSpace: "pre-wrap" }}
 				>
 					{!isEditing ? text || PLACEHOLDER : undefined}
 				</div>
