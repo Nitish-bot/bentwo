@@ -1,17 +1,22 @@
-import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import {
+	Card,
+	CardDescription,
+	CardHeader,
+	CardTitle,
+} from "@/components/ui/card";
 
 type UCardProps = {
-  title: string,
-  description: string,
-}
+	title: string;
+	description: string;
+};
 
-export const UCard = ({title, description}: UCardProps) => {
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle>{title}</CardTitle>
-        <CardDescription>{description}</CardDescription>
-      </CardHeader>
-    </Card>
-  )
-}
+export const UCard = ({ title, description }: UCardProps) => {
+	return (
+		<Card>
+			<CardHeader>
+				<CardTitle>{title}</CardTitle>
+				<CardDescription>{description}</CardDescription>
+			</CardHeader>
+		</Card>
+	);
+};

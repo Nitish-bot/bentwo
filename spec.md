@@ -1,385 +1,833 @@
-# bentwo
+# bentwo — Technical Specification
 
-## Personal Website Builder for Creatives
+## Purpose
 
-**Technical Architecture & Product Specification**  
-**Version 1.0 — Product Spec & Engineering Blueprint**  
-Covers: Terminology · Block System · Drag-and-Drop · Editor · Preview · Deployment
+This document is the single source of truth for the architecture, implementation plan, and design decisions of **bentwo**, a personal website builder for creatives. It exists so that every engineering decision can be traced back to an explicit requirement or constraint documented here.
 
----
-
-## 1. Terminology & Glossary
-
-Before any line of code is written, everyone on the team should speak the same language. This section defines every core concept used throughout this document.
-
-| Term | Definition |
-| --- | --- |
-| Site | The top-level entity owned by a user. A Site has a domain, global settings (fonts, colours, favicon), and contains one or more Pages. |
-| Page | A single scrollable URL within a Site (e.g. `/about`, `/work`). A Page is composed of an ordered list of Sections. |
-| Section | A full-width horizontal band on a Page. Sections act as layout containers and can have their own background colour, image, or video. Equivalent to a “row” in other builders. |
-| Block | The atomic content unit inside a Section. A Block has a Type (image, text, embed, etc.), a set of Props (its configuration), and a unique `blockId`. Blocks can be reordered via drag-and-drop. |
-| Block Type | The schema that defines what a Block does and what Props it accepts. Built-in types: Hero, RichText, ImageSingle, ImageGrid, VideoEmbed, PDFViewer, Divider, Spacer, ContactForm, LinkList. |
-| Props | The typed configuration object for a Block (e.g. `src`, `caption`, `layout`, `backgroundColor`). Props are edited in the Inspector Panel. |
-| Canvas | The central editing surface where Blocks are rendered in real-time. The Canvas is the source of truth for visual output. |
-| Inspector Panel | The right-side drawer that surfaces the Props of the currently selected Block. Changes here are reflected on the Canvas instantly. |
-| Block Toolbar | A small floating bar that appears above a selected Block on the Canvas. Contains: drag handle, move up/down arrows, duplicate, and delete. |
-| Add Block Button | The “+” trigger between Blocks that opens the Block Picker. Clicking it inserts a new Block at that specific position. |
-| Block Picker | The modal/sheet that lists all available Block Types, organised by category. Selecting a type inserts a Block with default Props at the target position. |
-| Draft | The unpublished working state of a Site. All edits happen in Draft. A Draft can be Previewed at any time. |
-| Snapshot | An immutable, versioned copy of a Site’s content tree saved before each Publish. Enables rollback. |
-| Published Version | The live version of a Site served to visitors. Created by promoting a Draft to Published via the Deploy Pipeline. |
-| Preview Mode | A read-only, full-screen rendering of the Draft that simulates the published site. Can be toggled per-device (Desktop / Tablet / Mobile). |
-| Deploy Pipeline | The server-side process triggered by Publish: it validates the content tree, runs Static Site Generation (SSG), uploads assets to CDN, and updates DNS/routing. |
-| Content Tree | The full JSON data structure representing a Site: `{ site, pages[], sections[], blocks[] }`. This is what gets serialised, versioned, and rendered. |
-| Theme | A set of design tokens (typefaces, colour palette, border radius, spacing scale) that apply globally across a Site. Blocks inherit Theme values unless locally overridden. |
-| Asset | Any user-uploaded binary: images, videos, PDFs, fonts. Assets are stored in object storage and referenced by URL in Block Props. |
-| Slot | A named drop-zone within a Block where a nested child Block can be placed. Used by compound Blocks like Hero (which has an “eyebrow”, “heading”, “cta” slot). |
+**How to use this document:**
+- Each phase is self-contained and testable in isolation. A phase is considered **complete** only when its defined tests pass.
+- Phases are ordered by dependency. Do not start Phase N+1 until Phase N is complete.
+- Open questions (marked with 🔬) are decisions that require research or prototyping before the phase can be finalized.
+- Stretch goals at the end are explicitly unplanned. They are recorded so they don't get lost, but they do not affect MVP scope.
 
 ---
 
-## 2. The Content Tree
+## Core Principles
 
-Everything the user creates is serialised into a single JSON data structure — the Content Tree. Understanding its shape is critical before building any feature.
-
-### Data Model Overview
-
-The tree has four layers of nesting: `Site → Page → Section → Block`. Each layer owns only what belongs to it — layout geometry lives in the Section, content lives in the Block, global design lives in the Site’s Theme.
-
-### Design Principle
-
-Keep the content tree flat enough to be readable but nested enough to be meaningful. Avoid deep nesting beyond four levels; it makes drag-and-drop serialisation expensive and diffing for version control messy.
-
-### Site Object
-
-| Field | Type | Purpose |
-| --- | --- | --- |
-| `siteId` | UUID | Globally unique identifier |
-| `domain` | string | Custom domain or subdomain (e.g. `jane.folio.so`) |
-| `theme` | `ThemeObject` | Global font, colour, spacing tokens |
-| `pages` | `Page[]` | Ordered list of pages; first page is the root URL |
-| `meta` | `MetaObject` | SEO title, description, og:image, favicon |
-| `createdAt / updatedAt` | ISO timestamp | Audit trail for version display |
-
-### Block Object
-
-Every Block, regardless of type, shares this base structure:
-
-| Field | Type | Notes |
-| --- | --- | --- |
-| `blockId` | UUID | Stable ID — survives reordering and duplication (duplicate gets new ID) |
-| `type` | `BlockType` enum | Determines which renderer and Inspector schema to use |
-| `props` | `Record<string, any>` | Type-specific configuration. Validated against BlockType schema on save |
-| `order` | integer | Position within the parent Section. 0-indexed; gaps allowed (reordering increments by 10) |
-| `visibility` | `VisibilityObject` | Per-breakpoint show/hide flags: `{ desktop, tablet, mobile }` |
-| `animation` | `AnimationObject?` | Optional entrance animation: `{ type, duration, delay }` |
+1. **Isolation:** Every phase builds a testable artifact. No phase depends on downstream phases to function.
+2. **Simplicity:** Use the minimum code that solves the problem. No speculative abstractions.
+3. **First-Principles:** Build primitives (components, hooks, schemas) from scratch. Do not carry over assumptions from the old `spec.md`.
+4. **Guest-First:** The editor works without authentication. Auth and persistence are layered on, not required for basic functionality.
 
 ---
 
-## 3. Block System & The Add Block Flow
-
-The Block System is the heart of the editor. It defines every content type the user can add and precisely how adding one feels — the “+” interaction that drives the entire creative experience.
-
-### Built-in Block Types
-
-Each Block Type is registered in a central `BlockRegistry`. The registry maps a type string to: a default props factory, a React renderer component, and an Inspector schema.
-
-#### Hero
-Full-bleed header with background image/video, headline, subheadline, and CTA button. Usually the first block on any page.
-
-#### RichText
-WYSIWYG prose block powered by Tiptap. Supports headings H1–H4, bold, italic, links, and inline images.
-
-#### ImageSingle
-One image with optional caption and alt text. Supports layout: `full-width | contained | float-left | float-right`.
-
-#### ImageGrid
-A responsive photo grid with configurable columns (2–6). Each cell has its own caption. Ideal for portfolios and case study galleries.
-
-#### VideoEmbed
-Embeds a Vimeo or YouTube URL. Autoplay, loop, and mute are toggleable. Falls back to poster image in Preview.
-
-#### PDFViewer
-Renders a PDF inline using PDF.js. Shows page controls and a download button. PDF is uploaded to asset storage and referenced by URL.
-
-#### Divider
-A visual separator. Configurable style: `line | dotted | blank space | custom SVG shape`.
-
-#### ContactForm
-A minimal contact form: name, email, message, submit. Sends to a configured email address via a serverless function endpoint.
-
-#### LinkList
-An ordered list of hyperlinks — useful for press mentions, social links, or resource lists. Each item has label, URL, and optional icon.
-
-#### Spacer
-A configurable blank area. Height is set in the Inspector. Used to control vertical rhythm between Blocks.
-
-### The Add Block Flow
-
-This is the primary creation interaction. It must be instant, discoverable, and non-disruptive to the content already on the canvas.
-
-#### Step 1 — Trigger: The “+” Button
-Between every pair of adjacent Blocks (and above the first and below the last), a horizontal `AddBlockZone` is rendered. By default this zone is invisible and only 8px tall. On hover it expands to 32px and reveals a centred “+” button.
-
-The zone is always present in the DOM — it is never conditionally rendered. This ensures hover detection is reliable.
-
-On touch devices, the zone is always 32px tall and the “+” is always visible, since hover is not available.
-
-A keyboard shortcut (`⌘ + Enter` while a Block is focused) opens the Block Picker to insert below the current Block.
-
-#### Step 2 — Block Picker Modal
-Clicking “+” opens a full-width bottom sheet on mobile and a centred modal on desktop. The picker shows all Block Types grouped into categories: Layout, Media, Text, Interactive, Utilities.
-
-Each Block Type card shows: an icon, a name, and a one-line description.
-
-A search input at the top of the picker filters Block Types in real time by name or category keyword.
-
-Recently used Block Types float to the top of the list under a “Recent” heading for repeat tasks.
-
-#### Step 3 — Insertion
-Selecting a Block Type from the picker closes the modal and synchronously inserts a new Block with default Props at the target position in the Content Tree. The new Block is immediately selected and scrolled into view. The Inspector Panel opens automatically showing its editable Props.
-
-Insertion is an atomic operation: the Content Tree update and the Canvas re-render happen in the same React state transaction.
-
-All insertions are pushed to the Undo Stack, so `Cmd+Z` removes the newly added block.
-
----
-
-## 4. Editor Architecture
-
-The editor is a three-panel layout: a left sidebar for site structure and page management, a central Canvas, and a right Inspector Panel. The Canvas is the source of truth — everything else reacts to it.
-
-### Editor Layout
-
-The three-panel layout is implemented in React with a persistent application shell. Panels communicate exclusively through a shared editor store (`Zustand` recommended for its low boilerplate and support for transient state subscriptions).
-
-### Panel Widths
-
-Left sidebar: 240px fixed. Canvas: fills remaining space with 32px padding each side. Inspector Panel: 320px fixed, slides in/out on Block selection. On screens narrower than 1280px, the Inspector overlays the Canvas rather than pushing it.
-
-### Left Sidebar — Site Navigator
-
-Shows all Pages as draggable rows. Drag to reorder, click to navigate, right-click for context menu (rename, duplicate, delete, set as home).
-
-`Add Page` button: Opens an inline name input that creates a new Page with a single empty Section when confirmed.
-
-Global settings link: Opens a settings sheet for Theme, custom domain, analytics, and SEO defaults.
-
-### Canvas — The Editing Surface
-
-The Canvas renders Block components in reading order. It has two sub-modes that switch without unmounting:
-
-**Edit Mode (default):** Blocks are editable in place. Clicking a Block selects it; its Block Toolbar appears above it and the Inspector opens on the right.
-
-**Preview Mode:** A full-screen overlay renders the Draft through the `PublicRenderer`, identical to how visitors see it. A floating toolbar at the top lets users switch between Desktop (1440px), Tablet (768px), and Mobile (375px) breakpoints. Exiting Preview returns the editor to its previous selection state.
-
-### Inspector Panel — Editing Props
-
-The Inspector is dynamically generated from the BlockType’s Inspector Schema — a JSON Schema–like definition that maps each Prop to a UI control.
-
-| Prop Type | UI Control | Example Prop |
-| --- | --- | --- |
-| string | Text input | caption, alt text, button label |
-| richtext | Tiptap mini-editor | Hero subheadline |
-| url | Text input + validate button | Link href, embed URL |
-| asset | Asset Picker + upload dropzone | Image src, PDF src, video poster |
-| color | Colour swatch + hex input | Background color, text color |
-| enum | Segmented control or Select | Layout variant (full / contained) |
-| boolean | Toggle switch | Autoplay, loop, show caption |
-| number | Slider + number input | Spacer height, grid columns |
-| spacing | Four-input margin/padding editor | Block padding top/bottom |
-
-### Prop Change Latency
-
-All Prop changes must update the Canvas within one frame (`< 16ms`). This means Inspector changes must never trigger a network call — they only update local state. Debounced auto-save to the server happens 1,500ms after the last change.
-
----
-
-## 5. Drag-and-Drop Reordering
-
-Drag-and-drop is the most mechanically complex part of the editor. Done poorly it feels laggy and unpredictable. Done well it feels like physically manipulating real objects. Use `@dnd-kit/core` as the DnD primitive — it is pointer-event based, accessible, and works in sandboxed iframes.
-
-### Library Choice: `@dnd-kit`
-
-`@dnd-kit` is preferred over React Beautiful DnD (unmaintained) and HTML5 Drag API (no touch support) for three reasons:
-
-- It is pointer-event-based, giving identical behaviour on mouse, touch, and stylus.
-- It does not mutate the DOM during drag — it uses CSS transforms on a `DragOverlay` clone, so the rest of the layout is not disturbed.
-- It provides a `useSortable` hook that handles all ARIA attributes for screen-reader accessibility without extra work.
-
-### Drag Interaction Design
-
-#### Initiating a Drag
-A drag is initiated via the drag handle icon (`⠿`) in the Block Toolbar. The handle appears on Block hover and on Block selection. Using a dedicated handle (rather than making the whole Block draggable) prevents accidental drags when the user tries to click or text-select inside the Block.
-
-Minimum drag distance before activation: 8px. This prevents accidental drags on tap.
-
-Long-press threshold on touch: 200ms. This allows the user to tap and hold to initiate a drag on mobile.
-
-#### During a Drag
-When a drag starts, two things happen simultaneously:
-
-- A `DragOverlay` clone of the Block is created and follows the pointer. The clone has reduced opacity (0.85) and a box shadow to communicate it is “lifted”.
-- The original Block’s position in the list becomes a placeholder — a dashed outline the same height as the original Block — so the user can see where the Block will land if dropped.
-
-As the user drags over other Blocks, the list reorders in real time using a CSS transition (`all 200ms ease`). The placeholder moves to the new position. This is the key feedback mechanism — the user sees the result before committing.
-
-#### Critical: No Layout Reflow During Drag
-Because `@dnd-kit` uses CSS transforms (`translate`) on the `DragOverlay`, and because the placeholder uses the same fixed height as the original, no other DOM elements shift during the drag. This prevents the disorienting jumping that plagues naive DnD implementations.
-
-#### Dropping
-On pointer release (or touch end), three things happen in this exact order:
-
-1. The `DragOverlay` animates to the placeholder position (duration: 150ms, easing: ease-out).
-2. The Content Tree is updated: the Block’s `order` field is recalculated, and the state is written to the editor store.
-3. The action is pushed to the Undo Stack so `Cmd+Z` restores the previous order.
-
-### Keyboard Reordering (Accessibility)
-
-Users who cannot use a pointer must also be able to reorder Blocks. When a Block’s drag handle is focused, Space activates keyboard drag mode. Arrow Up and Arrow Down move the Block one position. Space or Enter confirms the drop. Escape cancels. A live region announces the new position to screen readers.
-
-### Cross-Section Dragging
-
-In v1, Blocks can only be reordered within the same Section. Cross-section drag is deferred to v2. The DnD context boundary is intentionally scoped to one `SortableContext` per Section.
-
-### Order Field Strategy
-
-Block order is stored as a sparse integer rather than a dense array index. The first Block in a Section gets `order = 10`, the second `order = 20`, and so on, leaving gaps.
-
-Inserting a Block between `order 10` and `order 20` gives it `order = 15` — no other Blocks need updating.
-
-If the gap becomes too small (e.g. 14 and 15 with a new insert needed between them), a “rebalance” runs on that Section: all order values are recalculated as 10, 20, 30... and a single batch update is sent to the server.
-
-This design means that in the common case, reordering sends a single PATCH request updating only the moved Block’s order field, not a full re-serialisation of the Section.
-
----
-
-## 6. Preview System
-
-Preview is a non-destructive, read-only rendering of the Draft. It must be pixel-identical to the published site and must not share any editor state or styling.
-
-### Two Rendering Paths
-
-The application maintains two separate rendering stacks that consume the same Content Tree:
-
-**Editor Renderer**  
-Wraps each Block in selection/hover/DnD affordances. Imports editor-specific CSS. Runs only inside the editor shell.
-
-**Public Renderer**  
-Pure content output. No editor chrome. Used by Preview Mode, the Deploy Pipeline’s SSG step, and the live published site.
-
-This separation prevents a common builder bug where the “preview” looks different from the live site because it accidentally inherits editor styles or interactive event handlers.
-
-### Preview Mode Implementation
-
-#### Activation
-The user clicks the “Preview” button in the editor’s top bar. This mounts a full-screen overlay (`position: fixed, inset: 0, z-index: 9999`) over the editor. The overlay renders the `PublicRenderer` with the current Draft’s Content Tree passed as a prop. The editor beneath is not unmounted — this makes closing Preview instant.
-
-#### Breakpoint Simulation
-A floating device toolbar at the top of the preview overlay shows three buttons: Desktop, Tablet, Mobile. Selecting a breakpoint sets a CSS max-width constraint on the content wrapper inside the overlay and also injects a meta viewport override. This simulates the responsive behaviour of the live site without changing the user’s actual browser window size.
-
-#### Asset Resolution in Preview
-Assets in the Draft state are already uploaded to the CDN (upload happens on drop, not on publish). This means Preview Mode loads real production URLs for images, PDFs, and videos — there is no mocked or proxied asset system needed.
-
-#### Live Preview Sync
-While Preview Mode is open, the user should NOT be able to edit the Canvas — this prevents a confusing half-state. The editor’s input affordances are disabled (`pointer-events: none` on the Canvas layer) while the preview overlay is mounted.
-
----
-
-## 7. Deployment Pipeline
-
-Publishing is the act of taking a Draft and making it publicly accessible. The pipeline must be reliable, fast, and reversible. A failed publish should never corrupt the live site.
-
-### High-Level Pipeline Steps
-
-| # | Step | Detail |
-| --- | --- | --- |
-| 1 | Snapshot | Clone the current Draft’s Content Tree and write it as a new Snapshot with a UTC timestamp and auto-incremented version number (v1, v2…). |
-| 2 | Validation | Run the Content Tree through a schema validator. Check: all required Props are present, all asset URLs resolve (HEAD request), no broken internal links. |
-| 3 | Asset Optimisation | For any newly added images since the last publish, trigger an async job: resize to multiple breakpoints (400px, 800px, 1200px, 2400px), convert to WebP, and write versioned filenames to CDN. |
-| 4 | Static Site Generation | Feed the Content Tree into the `PublicRenderer` (Next.js `getStaticProps` or an equivalent SSG function). Generate one HTML file per Page. Inline critical CSS. Output to a build artefact directory. |
-| 5 | CDN Upload | Upload the build artefact directory to object storage (R2 or S3). Use atomic deployment: write to a new prefix (e.g. `/sites/{siteId}/v{n}/`), not in-place. |
-| 6 | Routing Update | Update the edge routing config (Cloudflare Workers or a database-backed reverse proxy) to point the user’s domain to the new version prefix. This is the atomic cutover — it is a single config write. |
-| 7 | Health Check | Issue a HEAD request to the live domain and verify a 200 response within 5 seconds. |
-| 8 | Publish Record | If the health check passes, write a Publish record to the database: `{ siteId, snapshotId, publishedAt, publishedBy }`. Update the Site’s `publishedVersion` pointer. |
-
-### Rollback
-
-Because the routing update is the only change that makes a version live, rollback is equivalent to pointing the router back at the previous version prefix. The UI exposes a “Version History” panel listing all Snapshots. Clicking “Restore” on any past Snapshot triggers Steps 6–8 of the pipeline with that Snapshot’s build artefact.
-
-Build artefacts are retained for 30 days or the last 10 versions, whichever is larger.
-
-Rollback does NOT overwrite the Draft — the user’s current work-in-progress is preserved.
-
-### Custom Domains
-
-The user connects a custom domain by adding a CNAME or A record to their DNS provider pointing to the platform’s edge IP. On the platform side, the domain is added to the Cloudflare zone (or equivalent), and a TLS certificate is provisioned via Let’s Encrypt / ACME. Domain verification is polled every 30 seconds until the DNS record resolves correctly, at which point the certificate is issued and the routing rule activates.
-
----
-
-## 8. Recommended Tech Stack
-
-These are pragmatic recommendations for a small team building v1. Each choice prioritises developer velocity and production reliability over theoretical purity.
+## Tech Stack
 
 | Layer | Technology | Rationale |
-| --- | --- | --- |
-| Editor Frontend | React + Next.js App Router | Server Components for the public renderer, Client Components for the editor. One codebase. |
-| Editor State | Zustand + Immer | Zustand for global editor state. Immer for immutable block tree mutations with undo/redo. |
-| Rich Text | Tiptap (ProseMirror) | Headless rich-text editor. Full control over rendering. Works in both Editor and Public Renderer. |
-| Drag-and-Drop | `@dnd-kit/sortable` | Pointer-event based, accessible, works inside iframes and `overflow: hidden` containers. |
-| Styling | Tailwind CSS + CSS Variables | Tailwind for editor chrome. CSS Variables for Theme tokens injected into Public Renderer. |
-| Database | PostgreSQL (Supabase) | Relational data for users, sites, pages, snapshots. Supabase provides auth, real-time, and row-level security out of the box. |
-| Asset Storage | Cloudflare R2 | S3-compatible, no egress fees. Paired with Cloudflare Images for on-the-fly resizing. |
-| Deploy / Hosting | Cloudflare Workers + Pages | SSG output deployed to Pages. Workers handle domain routing and auth edge middleware. |
-| Background Jobs | Inngest or Trigger.dev | Async pipeline steps (asset optimisation, SSG, health checks) as durable functions. |
-| Auth | Supabase Auth | Magic link + OAuth (Google). JWTs validated at the Cloudflare Workers edge. |
+|---|---|---|
+| Framework | Next.js 15 (App Router) | File-based routing, SSR for public sites, one codebase |
+| Language | TypeScript 5.x | Type safety across editor and renderer |
+| Styling | Tailwind CSS 4.x | Utility-first, responsive by default |
+| Components | shadcn/ui | Headless primitives, consistent with Tailwind |
+| Editor Engine | `@craftjs/core` | Declarative node tree, built-in drag-and-drop, serialization |
+| Icons | `@phosphor-icons/react` | Consistent icon set, better than lucide for this aesthetic |
+| Database | InstantDB (`@instantdb/react`) | Client-first, real-time, auth built-in, no backend boilerplate |
+| Animation | None for MVP | Defer to post-MVP |
 
 ---
 
-## 9. Undo / Redo & Auto-Save
+## Data Model
 
-A website builder without a reliable undo stack will frustrate every user who accidentally deletes a block. The undo system is non-negotiable for v1.
+### InstantDB Schema
 
-### Undo Stack Design
+```typescript
+// instant.schema.ts — Phase 7 finalizes this
+entities: {
+  $users: i.entity({
+    email: i.string().unique().indexed().optional(),
+    imageURL: i.string().optional(),
+  }),
+  $files: i.entity({
+    path: i.string().unique().indexed(),
+    url: i.string(),
+  }),
+  sites: i.entity({
+    subdomain: i.string().unique().indexed(),
+    name: i.string(),
+    settings: i.json(), // { title, metaDescription, faviconUrl, ogImageUrl }
+    publishedAt: i.number().optional(), // timestamp
+  }),
+  pages: i.entity({
+    siteId: i.string().indexed(),
+    slug: i.string().indexed(),
+    name: i.string(),
+    contentJSON: i.json(), // Craft.js serialized tree (single blob)
+    order: i.number(), // for page ordering in nav
+  }),
+}
+links: {
+  siteOwner: {
+    forward: { on: "sites", has: "one", label: "owner" },
+    reverse: { on: "$users", has: "many", label: "sites" },
+  },
+  sitePages: {
+    forward: { on: "sites", has: "many", label: "pages" },
+    reverse: { on: "pages", has: "one", label: "site" },
+  },
+}
+```
 
-Use a command-pattern undo stack stored in the editor’s Zustand store. Each undoable action is represented as a pair of functions: `{ apply, revert }`. The stack has a max depth of 100 entries; older entries are discarded.
+### Content Tree Format
 
-Block add, delete, reorder, and duplicate are undoable.
+Each page stores its entire Craft.js tree as a single JSON blob in `pages.contentJSON`.
 
-Prop changes are batched: rapid consecutive changes to the same Prop (e.g. dragging a slider) are collapsed into a single undo entry using a 500ms debounce window. The user does not want to undo 50 slider positions.
+**Why blob, not normalized nodes:**
+- One read/write per page. No N+1 query problems.
+- Craft.js's `query.serialize()` / `actions.deserialize()` work natively with zero transformation.
+- InstantDB does not need to query inside the tree structure. The tree is opaque to the DB.
+- Upgrade path: can migrate to normalized nodes later by walking the blob.
 
-Page-level operations (add page, delete page, rename) are undoable.
-
-Published state is NOT undoable from the editor — use the Version History / Rollback feature instead.
-
-### Auto-Save
-
-The Draft is continuously auto-saved to the server. Auto-save is triggered 1,500ms after the last state change. A status indicator in the top bar shows: `Saving... | Saved | Unsaved changes`. On browser unload (`beforeunload`), if there are unsaved changes, the browser’s native “Leave page?” dialog is shown.
+**Tradeoff accepted:** Cannot ask InstantDB "find all pages containing a Card." This is not an MVP requirement.
 
 ---
 
-## 10. V2 Considerations
+## Phases
 
-These features are explicitly deferred to avoid scope creep in v1. They should be designed for from the start, even if not implemented.
+### Phase 0 — Stack Migration: Vite → Next.js
 
-- Cross-Section drag-and-drop: Blocks dragged across Section boundaries. Requires a unified DnD context across the entire Page.
-- Nested Blocks / Columns: A ColumnLayout Block Type that contains two or more vertical columns, each of which holds an ordered list of child Blocks. Requires recursive rendering and a recursive DnD context.
-- Custom Block Types: An SDK for developers to register their own Block Types. Requires a sandboxed iframe renderer and a props schema validation API.
-- Collaborative Editing: Real-time multi-cursor editing using CRDTs (Yjs). Requires replacing Immer mutations with Yjs-compatible operations.
-- Theme Editor: A visual editor for the Site’s Theme tokens. Currently Theme is edited via a JSON editor for simplicity in v1.
-- A/B Testing: Multiple Variants per Block. Traffic splitting at the edge. Requires a variant management UI and analytics integration.
+**Goal:** The repository builds and runs as a Next.js App Router application. All existing UI components and styles are preserved.
+
+**Scope:**
+- Remove Vite, `vite.config.ts`, and `index.html`.
+- Install Next.js 15 with App Router.
+- Reconfigure Tailwind CSS v4 for Next.js.
+- Create App Router file structure: `app/layout.tsx`, `app/page.tsx` (landing), `app/editor/page.tsx`.
+- Remove `react-router-dom` dependency. Use Next.js `Link` and file-based routing.
+- Port `src/main.tsx` logic into `app/layout.tsx`.
+- Ensure all existing `components/ui/*` and `components/user/*` imports resolve.
+- Verify `tailwind-merge`, `class-variance-authority`, `clsx` still work.
+- Update `tsconfig.json` if needed for Next.js path aliases.
+
+**Definition of Done:**
+- [ ] `npm run dev` starts Next.js dev server without errors.
+- [ ] `npm run build` produces a successful production build.
+- [ ] `/` renders a placeholder landing page.
+- [ ] `/editor` renders a placeholder editor page.
+- [ ] All 4 existing user components (`UText`, `UCard`, `UButton`, `UContainer`) render without visual regression.
+
+**Open Questions:**
+- 🔬 Tailwind v4 configuration syntax changed significantly from v3. Research the correct `globals.css` import pattern for Next.js.
+- 🔬 `shadcn/ui` components were installed for Vite. Do they need re-initialization for Next.js?
 
 ---
 
-## 11. Open-source tools to study
+### Phase 1 — Craft.js Core Foundation
 
-These are good references for the same general problem space:
+**Goal:** The `/editor` route renders a functioning Craft.js canvas with a default text node. The node is selectable and serializable.
 
-- **Craft.js** — a React framework for building drag-and-drop page editors. It is an abstraction layer rather than a full editor UI, which makes it useful for studying editor state, node trees, and custom renderers.
-- **GrapesJS** — a mature open-source web builder framework for drag-and-drop HTML-like content. Good for studying blocks, canvas interactions, and export flows.
-- **TinaCMS** — an open-source headless CMS with visual editing. Useful for preview/editor coupling and content workflows.
-- **Payload CMS** — an open-source TypeScript/Next.js framework with a blocks field, admin UI, and live preview patterns.
-- **Webstudio** — an open-source website builder and Webflow alternative. Useful for studying modern visual editing and CSS-property-level control.
-- **Puck** — a modular open-source visual editor for React. Good for studying component-driven block editing in React apps.
+**Scope:**
+- Install `@craftjs/core` and its peer dependencies (`@craftjs/layers` is deferred).
+- Build the editor shell component hierarchy:
+  ```
+  <Editor resolver={resolver}>
+    <Frame>
+      <Element is="div" canvas={true}>
+        {/* default nodes */}
+      </Element>
+    </Frame>
+  </Editor>
+  ```
+- Convert `UText` from a plain React component to a Craft.js **User Component**:
+  - Wrap with `React.forwardRef`.
+  - Use `useNode()` hook inside.
+  - Attach `connectors.connect` and `connectors.drag` to the outer DOM element.
+  - Define static `.craft` property with default `props` and `rules`.
+  - Use `setProp` for prop mutations.
+- Convert `UCard`, `UButton` to User Components with `.craft` defaults.
+- Build a `resolver` object mapping component names to User Components.
+- Render a default tree: one `UText` node with placeholder text.
+- Add visual selection/hover states:
+  - `isSelected` → blue ring border.
+  - `isHovered` → subtle gray background tint.
+  - Only one node selected at a time.
+
+**Definition of Done:**
+- [ ] `/editor` renders without runtime errors.
+- [ ] A default text node appears on the canvas.
+- [ ] Clicking the text shows a blue selection ring.
+- [ ] Hovering the text shows a hover state.
+- [ ] Calling `query.serialize()` returns a JSON tree with the text node and its props.
+- [ ] `UCard` and `UButton` are registered in the resolver and can be referenced in serialized trees.
+
+**Open Questions:**
+- 🔬 Does `@craftjs/core` support React 19? If not, what is the compatibility workaround?
+- 🔬 How does Craft.js handle SSR in Next.js? The `<Editor>` must likely be wrapped in a `"use client"` boundary.
+
+---
+
+### Phase 2 — The Slash Command
+
+**Goal:** Typing `/` inside the default text node opens a command palette. Selecting an item replaces the current node with that component type.
+
+**Scope:**
+- Make `UText` editable inline. Use a controlled `contentEditable` div or `<input>`.
+- Track the current text value in the node's props via `setProp`.
+- On `onKeyDown` in the text input:
+  - If key is `/`, record that slash-command mode is active.
+  - If key is `Escape`, cancel slash-command mode.
+  - If key is `Enter` or `ArrowDown` while in slash mode, navigate dropdown.
+- Render a dropdown menu below the cursor position when slash mode is active.
+- Dropdown lists all available component types: `Text`, `Card`, `Button`.
+- Filter dropdown items by substring after `/` (e.g., `/ca` → Card).
+- On item selection:
+  1. Get current node's ID and parent ID.
+  2. Delete current node via `actions.delete(id)`.
+  3. Create new node tree for selected component type via `query.parseReactElement()`.
+  4. Add new node at the same index in parent via `actions.addNodeTree()`.
+- Support undo: the delete+add sequence must be a single undoable action (or two sequential undos must restore original state).
+
+**Definition of Done:**
+- [ ] Typing `/` in the text node opens a dropdown.
+- [ ] Dropdown lists Card, Button, Text.
+- [ ] Typing `/bu` filters to Button.
+- [ ] Selecting Button replaces the text node with a Button component at the exact same position.
+- [ ] Pressing `Cmd+Z` restores the original text node.
+- [ ] Escape closes the dropdown without replacing anything.
+
+**Open Questions:**
+- 🔬 Craft.js `actions.addNodeTree()` — does it preserve insertion order relative to siblings? Verify behavior.
+- 🔬 Should the dropdown be a floating UI element (portaled) or inline? Inline is simpler for MVP.
+
+---
+
+### Phase 3 — Hover Toolbar (Add-Below + Drag)
+
+**Goal:** Hovering any component shows two action icons: `+` to add a component below, and a drag handle to reorder.
+
+**Scope:**
+- Inside each User Component, use `useNode()` to read `isHovered`.
+- When hovered, render a small floating toolbar adjacent to the node (left side or top-right).
+- Toolbar contains two icon buttons (Phosphor icons):
+  - `Plus` icon: "Add component below."
+  - `DotsSixVertical` or `HandGrabbing` icon: drag handle.
+- **Add-Below (`+`):**
+  - On click, insert a new `UText` node immediately after the hovered node.
+  - Use `actions.add()` with the new node and target parent/index.
+  - The new text node starts in edit mode (optional: focus it).
+- **Drag Handle:**
+  - Attach `connectors.drag(ref)` to the drag handle button element.
+  - The handle itself is the drag initiator, not the whole component.
+  - Craft.js built-in positioner handles drop indicators and reordering.
+  - Ensure `forwardRef` on the component outer element so Craft.js can measure DOM bounds.
+
+**Definition of Done:**
+- [ ] Hovering any component shows the toolbar.
+- [ ] Moving mouse away hides the toolbar.
+- [ ] Clicking `+` inserts a new `UText` node directly below.
+- [ ] Dragging the handle reorders the component within its parent canvas.
+- [ ] Drop indicators show during drag (provided by Craft.js).
+- [ ] Undo restores order after drag.
+
+**Open Questions:**
+- 🔬 Craft.js `connectors.drag` on a child element (the handle) vs. the whole component — any gotchas with event bubbling?
+- 🔬 On touch devices, hover doesn't exist. How does the toolbar behave? (Defer touch to post-MVP, but document.)
+
+---
+
+### Phase 4 — Click-to-Edit Settings Panel
+
+**Goal:** Clicking a selected component opens a floating settings panel near it. Changes reflect on canvas immediately.
+
+**Scope:**
+- Build a `SettingsPanel` component.
+- It accepts: `componentType`, `currentProps`, `onPropChange(propKey, value)`.
+- It renders form controls based on a **prop schema** defined per component type.
+- Position the panel using `getBoundingClientRect()` of the selected DOM node. Use `fixed` positioning offset to the right of the node. If off-screen, flip to left side.
+- Panel closes when: user clicks outside, user presses Escape, user selects a different node.
+- Define prop schemas:
+  - **UText:** `text` (string), `fontSize` (number/slider), `color` (string/hex), `align` (enum: left/center/right).
+  - **UCard:** `title` (string), `description` (string).
+  - **UButton:** `label` (string), `href` (string), `variant` (enum: default/outline/ghost).
+- Use shadcn/ui form controls: `Input`, `Slider`, `Select`.
+- Every prop change calls `onPropChange`, which internally calls `setProp` via Craft.js. This updates the node prop and re-renders the component.
+
+**Definition of Done:**
+- [ ] Clicking a component opens the settings panel next to it.
+- [ ] Changing `text` in the panel updates the canvas text immediately (< 16ms).
+- [ ] Changing `fontSize` via slider updates text size live.
+- [ ] Changing `color` updates text color live.
+- [ ] Panel closes on outside click or Escape.
+- [ ] Panel does not open for unselected nodes.
+- [ ] All three component types have working settings.
+
+**Open Questions:**
+- 🔬 How to handle panel going off-screen on small viewports? Clamp to viewport bounds?
+- 🔬 Should settings be debounced for text inputs, or fire on every keystroke? (Fire immediately for responsiveness; debounce is for persistence, not UI.)
+
+---
+
+### Phase 5 — Editor Shell (Bottom Bar)
+
+**Goal:** The editor is a clean, full-bleed canvas. The only chrome is a floating bottom bar.
+
+**Scope:**
+- Remove or hide any persistent sidebars, top bars, or inspectors.
+- Canvas fills the entire viewport.
+- Build `BottomBar` component:
+  - Fixed position, bottom-center of screen.
+  - Rounded pill shape, shadow, background blur.
+  - Height: ~48px. Padding: comfortable touch targets (min 40px per button).
+- Buttons in the bar:
+  - **Page switcher:** Dropdown showing current page name (default "Home"). Click to expand list.
+  - **Add Page:** Small `+` button next to the page name.
+  - **Docs:** Link to `/docs` (TBD — can be a placeholder href for now).
+  - **Settings:** Gear icon. Opens a slide-out sheet or modal.
+- Ensure the bar never obstructs the bottom-most component on the canvas. Add sufficient bottom padding to the canvas container.
+- The bar is always visible when in editor mode.
+
+**Definition of Done:**
+- [ ] Editor canvas is full-bleed, no sidebars.
+- [ ] Bottom bar is visible and centered at bottom.
+- [ ] Page switcher shows "Home" by default.
+- [ ] Docs link is present (can be `href="#"` for now).
+- [ ] Settings button opens a panel/sheet.
+- [ ] Bar does not overlap canvas content at the bottom.
+
+**Open Questions:**
+- 🔬 Should the bar auto-hide after inactivity and reappear on mouse move? (Defer to polish phase.)
+
+---
+
+### Phase 6 — Multi-Page System (In-Memory)
+
+**Goal:** Users can create, rename, switch, and delete pages. Each page has its own independent Craft.js tree. No backend yet.
+
+**Scope:**
+- In-memory page store: React state shaped as `Record<string, SerializedNode>`.
+  - Key = page slug (e.g., `"home"`, `"about"`).
+  - Value = Craft.js serialized tree for that page.
+- Default state: one page `"home"` with a single `UText` node.
+- Page switcher in bottom bar:
+  - Dropdown lists all page names.
+  - Clicking a page switches the active page.
+  - Switching pages unmounts the current `<Frame>` and mounts a new one with the selected tree.
+- **Add Page:**
+  - Button in bottom bar opens a small prompt (inline input or modal) for page name.
+  - Validates: name is non-empty, slug is unique.
+  - Creates new entry with default tree (single `UText`).
+- **Rename Page:**
+  - Right-click or long-press on page name in switcher → inline edit.
+  - Updates slug and name.
+- **Delete Page:**
+  - Confirm dialog. Cannot delete the last remaining page.
+- **URL Sync:**
+  - `/editor` loads the "home" page.
+  - `/editor/[pageName]` loads that specific page.
+  - Use Next.js dynamic route: `app/editor/[pageName]/page.tsx`.
+  - When switching pages via UI, call `router.push(`/editor/${slug}`)`.
+- **Undo scope:** Undo history is per-page. Switching pages resets the undo stack (acceptable for MVP).
+
+**Definition of Done:**
+- [ ] Bottom bar page switcher lists all pages.
+- [ ] Clicking a page loads its canvas.
+- [ ] Each page has an independent tree (add component to Page A, switch to Page B, component is not there).
+- [ ] Adding a page creates it with default content.
+- [ ] Renaming a page updates the switcher and URL.
+- [ ] Deleting a page removes it from the switcher.
+- [ ] Direct navigation to `/editor/about` loads the "about" page.
+- [ ] Cannot delete the only remaining page.
+
+**Open Questions:**
+- 🔬 Does Craft.js `<Frame>` support dynamic tree replacement without unmounting? If not, unmounting is fine.
+- 🔬 Should page order in the switcher be configurable (drag to reorder)? (Defer to stretch goals.)
+
+---
+
+### Phase 7 — InstantDB Schema Design
+
+**Goal:** The database schema supports sites, pages, and users. Schema is pushed to InstantDB and validated.
+
+**Scope:**
+- Finalize schema design (see Data Model section above).
+- Update `src/lib/instant.schema.ts` with new entities: `sites`, `pages`.
+- Define links:
+  - `sites` → `pages` (one-to-many).
+  - `$users` → `sites` (one-to-many, owner).
+- Index fields that will be queried: `sites.subdomain`, `pages.siteId`, `pages.slug`.
+- Update `src/lib/instant.perms.ts`:
+  - Owners can create, view, update, delete their own `sites` and `pages`.
+  - Anyone can view published sites (when we get there; for now, restrict view to owner).
+  - `$users` defaults are acceptable for MVP.
+- Push schema and permissions:
+  ```bash
+  npx instant-cli push schema --yes
+  npx instant-cli push perms --yes
+  ```
+- Verify in InstantDB dashboard that schema is active.
+
+**Definition of Done:**
+- [ ] `instant.schema.ts` contains `sites` and `pages` entities with correct types.
+- [ ] `instant.perms.ts` contains ownership-based rules.
+- [ ] `npx instant-cli push schema --yes` succeeds.
+- [ ] `npx instant-cli push perms --yes` succeeds.
+- [ ] Schema is visible and correct in InstantDB dashboard.
+
+**Open Questions:**
+- 🔬 InstantDB `i.json()` type — does it have size limits? Document findings.
+- 🔬 Should `contentJSON` be typed more strictly than `i.json()`? (No — it's an opaque blob.)
+
+---
+
+### Phase 8 — Auth (Sign-Up / Sign-In)
+
+**Goal:** Users can authenticate via InstantDB. Guest editing continues to work. Unauthenticated users are nudged to sign up.
+
+**Scope:**
+- Use InstantDB built-in auth (magic code recommended for simplicity; OAuth as stretch).
+- Build minimal auth UI:
+  - Sign-in modal with email input.
+  - InstantDB sends magic code.
+  - Code verification input.
+  - On success, `db.useAuth()` returns user.
+- Guest mode:
+  - Editor is fully functional without auth.
+  - Trees live in React state + `localStorage` backup.
+  - On mount, check `localStorage` for guest session and restore.
+- "Sign up to save" banner:
+  - Appears after the user makes their first meaningful edit (e.g., adds a component or changes text).
+  - Dismissible. Non-intrusive.
+  - Clicking it opens the sign-in modal.
+- On successful auth:
+  - Hide guest banner.
+  - Do NOT auto-migrate guest data yet (Phase 9 handles this).
+
+**Definition of Done:**
+- [ ] Guest user can open editor and add components without signing in.
+- [ ] Guest session persists across reload via `localStorage`.
+- [ ] Sign-in modal accepts email and magic code.
+- [ ] Successful sign-in creates `$users` entry.
+- [ ] Banner appears after first edit and can be dismissed.
+- [ ] Auth state is reactive across the app (via `db.useAuth()`).
+
+**Open Questions:**
+- 🔬 Magic code expiration time in InstantDB? How long is the code valid?
+- 🔬 OAuth (Google) — is it worth adding in this phase or defer? (Defer to stretch goals.)
+
+---
+
+### Phase 9 — Persistence Layer
+
+**Goal:** Authenticated users can save and load their sites from InstantDB. Auto-save works.
+
+**Scope:**
+- **Save action:**
+  - Serialize all page trees from the in-memory store.
+  - Upsert `sites` entity (create if new, update if existing).
+  - Upsert all `pages` entities for that site.
+  - Use `db.transact()` with multiple transactions in one batch.
+  - Show "Saving..." / "Saved" status in bottom bar.
+- **Load action:**
+  - On editor mount for authenticated user, query their site and pages from InstantDB.
+  - `db.useQuery({ sites: { pages: {} } })`.
+  - If site exists, deserialize each page's `contentJSON` into the in-memory store.
+  - If no site exists, create a default one with a "home" page.
+- **Auto-save:**
+  - Debounce: 1500ms after the last change.
+  - Trigger on: prop change, add/delete/reorder node, add/rename/delete page.
+  - Status indicator in bottom bar: `Unsaved changes → Saving... → Saved`.
+- **Guest → Auth migration:**
+  - On login, if guest session has unsaved data, show modal: "Save your work to your account?"
+  - If yes, create new site with guest data.
+  - If no, discard guest data.
+- **Error handling:**
+  - If save fails, show error toast. Keep local state intact. Retry on next change.
+
+**Definition of Done:**
+- [ ] Authenticated user sees their previously saved site on reload.
+- [ ] Adding a component triggers auto-save after 1.5s debounce.
+- [ ] Bottom bar shows correct save status.
+- [ ] Guest data can be migrated to authenticated account.
+- [ ] Save failure shows error and does not corrupt local state.
+- [ ] Data is visible and correct in InstantDB dashboard.
+
+**Open Questions:**
+- 🔬 InstantDB transaction batch limits? How many pages can we upsert at once?
+- 🔬 Should we compress `contentJSON` before storing? (Probably not for MVP, but note if blobs get large.)
+
+---
+
+### Phase 10 — Public Renderer
+
+**Goal:** A read-only component renders a Craft.js tree without the Editor overhead. Used for preview and published sites.
+
+**Scope:**
+- Build `PublicRenderer` component:
+  - Props: `data: SerializedNode`, `resolver: ComponentResolver`.
+  - Recursively walks the tree and renders React elements.
+  - Does NOT import `@craftjs/core` hooks or context.
+  - Does NOT render selection borders, hover toolbars, or drag handles.
+  - Pure rendering based on props.
+- Tree walker logic:
+  - For each node in `data`, look up `type` in `resolver`.
+  - Pass `props` to the resolved component.
+  - If node has `nodes` (children), recursively render them.
+  - If node has `isCanvas`, render children as a flex container (respecting layout direction).
+- Preview mode in editor:
+  - Toggle button in bottom bar: "Preview".
+  - When active, render the current page tree through `PublicRenderer` instead of `<Frame>`.
+  - Add a "Back to editor" button to exit preview.
+  - Preview is read-only.
+- Responsive verification:
+  - Ensure Tailwind responsive classes in component props are applied correctly.
+  - Test at 375px, 768px, 1280px.
+
+**Definition of Done:**
+- [ ] `PublicRenderer` renders a card tree identically to the editor, minus chrome.
+- [ ] Preview toggle switches between editable canvas and read-only preview.
+- [ ] Preview is truly read-only (no selection, no editing).
+- [ ] Responsive classes work in preview mode.
+
+**Open Questions:**
+- 🔬 Does Craft.js expose a utility for tree traversal that we can reuse, or must we write our own? (Likely our own — it's simple recursion.)
+- 🔬 How to handle `Element canvas={true}` in the public renderer? Render as a `<div>` with flex layout.
+
+---
+
+### Phase 11 — Publishing & Wildcard Subdomain
+
+**Goal:** Visiting `[subdomain].xyz.cc` fetches the site JSON and renders it via `PublicRenderer`.
+
+**Scope:**
+- **API Route:**
+  - `app/api/site/route.ts` (App Router Route Handler).
+  - Accepts `?subdomain=x` query param.
+  - Uses InstantDB Admin SDK (`@instantdb/admin`) to query site + pages.
+  - Returns JSON: `{ site, pages }`.
+  - Handle 404 if subdomain not found.
+- **Middleware:**
+  - `middleware.ts` at root.
+  - Inspect `request.headers.get("host")`.
+  - If host matches `*.xyz.cc`:
+    - Extract subdomain.
+    - Rewrite to `/[subdomain]/page?subdomain={subdomain}`.
+  - Else, continue to normal Next.js routing.
+- **Subdomain Page:**
+  - `app/[subdomain]/page.tsx` (or similar catch-all).
+  - Server Component: calls the internal API or queries InstantDB directly.
+  - Fetches site JSON.
+  - Renders `PublicRenderer` with the home page tree.
+  - Inject site settings into `<head>`: title, meta description, favicon.
+- **Publish button:**
+  - In editor bottom bar.
+  - On click, sets `sites.publishedAt` to current timestamp in InstantDB.
+  - Shows confirmation toast: "Published to {subdomain}.xyz.cc".
+- **Unpublished state:**
+  - If `publishedAt` is null, visiting the subdomain shows a "Coming soon" page or 404.
+
+**Definition of Done:**
+- [ ] `GET /api/site?subdomain=test` returns correct site JSON.
+- [ ] Middleware correctly identifies `*.xyz.cc` hosts and rewrites.
+- [ ] Visiting subdomain page renders the site's home page.
+- [ ] Published site has correct `<head>` metadata.
+- [ ] Unpublished site shows 404 or placeholder.
+- [ ] Publish button in editor updates `publishedAt`.
+
+**Open Questions:**
+- 🔬 Next.js App Router `middleware.ts` — does it support subdomain-based rewrites in production (e.g., Vercel)? Verify hosting platform capabilities.
+- 🔬 InstantDB Admin SDK initialization — where to store admin token securely? (Env var, server-only.)
+- 🔬 Caching strategy for published sites? Next.js ISR with `revalidate`?
+
+---
+
+### Phase 12 — Container System (Research → Implementation)
+
+**Goal:** `UContainer` becomes a true layout primitive. It can hold multiple child components and control their flow direction.
+
+**Scope:**
+- **12a — Research:**
+  - Convert `UContainer` to a Craft.js User Component.
+  - Add an `<Element canvas={true} />` inside it as the drop zone.
+  - Test: can components be dropped into the container?
+  - Test: can components be dragged out of the container?
+  - Test: does Craft.js positioner correctly calculate drop indices inside a nested canvas?
+  - Document findings: what works, what breaks, what's awkward.
+- **12b — Flex Container MVP:**
+  - Add `direction: "row" | "column"` prop to `UContainer`.
+  - Render children in a flex container with `flex-direction` set accordingly.
+  - Container settings panel: direction toggle.
+- **12c — Arbitrary Grid Research:**
+  - Investigate whether Craft.js supports multiple independent drop zones per component.
+  - Investigate custom `Positioner` behavior for grid-like layouts.
+  - Determine if arbitrary row/column placement is feasible within Craft.js's architecture.
+  - **Decision point:** If feasible, proceed to 12d. If not, document the limitation and define the upgrade path (e.g., custom DnD library for containers, or defer grid to v2).
+- **12d — Extended Props (if grid is feasible):**
+  - Add `gap`, `justifyContent`, `alignItems`, `padding`, `backgroundColor`, `borderRadius`.
+  - Settings panel reflects these props.
+
+**Definition of Done:**
+- [ ] Components can be dropped into `UContainer`.
+- [ ] Components can be reordered within `UContainer`.
+- [ ] `direction: row` renders children horizontally.
+- [ ] `direction: column` renders children vertically (default).
+- [ ] Research findings are documented in this spec (update Phase 12 with results).
+- [ ] If grid is deferred, the decision and rationale are recorded.
+
+**Open Questions:**
+- 🔬 **This is the primary research phase.** The entire feasibility of the container system depends on Craft.js's support for nested canvases. Prototype first, decide second.
+- 🔬 Does nested `<Element canvas={true}>` create a separate drag context, or is it unified with the parent?
+- 🔬 What happens when dragging a node from a container to the root canvas? Does `actions.move()` handle cross-parent moves?
+
+---
+
+### Phase 13 — Settings & Docs
+
+**Goal:** Site-level settings are editable and reflected in published output. Landing page is complete.
+
+**Scope:**
+- **Site Settings Sheet:**
+  - Opened from bottom bar gear icon.
+  - Fields:
+    - Site name (string).
+    - Meta title (string).
+    - Meta description (string).
+    - Favicon URL (string — can be InstantDB file upload later, string for MVP).
+    - OG image URL (string).
+  - Saved to `sites.settings` JSON blob in InstantDB.
+- **Renderer `<head>` injection:**
+  - In public renderer and subdomain pages, read `site.settings`.
+  - Render `<title>`, `<meta name="description">`, `<link rel="icon">`, `<meta property="og:image">`.
+- **Landing Page (`/`):**
+  - Showcase the builder's capabilities.
+  - Sections: Hero, Feature list, Example sites gallery, CTA to `/editor`.
+  - Use existing user components to build the landing page (dogfood the builder).
+  - Responsive design.
+- **Docs Link:**
+  - Bottom bar "Docs" button links to external GitBook (TBD).
+  - Opens in new tab.
+
+**Definition of Done:**
+- [ ] Settings sheet opens from bottom bar.
+- [ ] All settings fields save correctly.
+- [ ] Published site has correct `<head>` metadata.
+- [ ] Landing page is visually complete and responsive.
+- [ ] Docs link opens external URL in new tab.
+
+**Open Questions:**
+- 🔬 Should the landing page be built *with* the builder (self-hosting), or hand-coded? (Hand-coded is faster for MVP. Dogfooding is a stretch goal.)
+
+---
+
+## Stretch Goals (Unplanned)
+
+These are features that would be nice but are **explicitly out of scope** for the MVP. They are recorded here to avoid losing good ideas.
+
+### Editor Polish
+- [ ] **Animation system:** Entrance animations for components (fade, slide). Framer-motion integration.
+- [ ] **Undo/Redo UI:** Visual undo history (timeline of actions).
+- [ ] **Keyboard shortcuts:** `Cmd+Z` / `Cmd+Shift+Z`, `Cmd+D` duplicate, `Delete` remove.
+- [ ] **Touch device support:** Bottom toolbar for mobile editing, touch-friendly drag handles.
+- [ ] **Zoom controls:** Zoom in/out of canvas.
+- [ ] **Grid/snap system:** Align components to a grid.
+
+### Component System
+- [ ] **More components:** Image, Video, Divider, Spacer, Form, Gallery, Embed.
+- [ ] **Component presets:** Pre-designed component combinations (Hero section, Feature grid).
+- [ ] **Custom CSS per component:** Advanced users can inject custom CSS classes.
+- [ ] **Container grid mode:** True CSS Grid with configurable rows/columns.
+
+### Multi-Page Enhancements
+- [ ] **Page drag reordering:** Reorder pages in the bottom bar via drag-and-drop.
+- [ ] **Nested pages:** Sub-pages or folder-like organization.
+- [ ] **Page templates:** Start a new page from a template.
+
+### Collaboration
+- [ ] **Real-time collaboration:** Multiple users editing the same site simultaneously.
+- [ ] **Comments:** Leave comments on components.
+- [ ] **Version history:** Snapshots of site state, ability to restore.
+
+### Publishing & Hosting
+- [ ] **Custom domains:** Users can connect their own domain (CNAME setup).
+- [ ] **SSL auto-provisioning:** Let's Encrypt integration.
+- [ ] **Analytics:** Basic page view tracking.
+- [ ] **SEO tools:** Sitemap generation, robots.txt, structured data.
+- [ ] **Preview before publish:** Temporary preview URL (`preview-{id}.xyz.cc`).
+
+### Auth & Billing
+- [ ] **OAuth providers:** Google, GitHub sign-in.
+- [ ] **Team/organization support:** Multiple users per site with roles (admin, editor).
+- [ ] **Paid plans:** Stripe integration for premium features (custom domains, more pages).
+
+### Data & Export
+- [ ] **Export to HTML/JSX:** Download site as static files or React code.
+- [ ] **Import from other builders:** Notion, WordPress import.
+- [ ] **Asset manager:** Centralized image/file library with organization.
+
+---
+
+## Appendix: Component Registry
+
+Each user component must expose:
+
+```typescript
+interface UserComponentConfig {
+  displayName: string;           // Human-readable name for slash command
+  craft: {
+    props: Record<string, any>;  // Default props
+    rules: {
+      canDrag?: (node: Node) => boolean;
+      canDrop?: (targetNode: Node) => boolean;
+      canMoveIn?: (incomingNode: Node) => boolean;
+      canMoveOut?: (outgoingNode: Node) => boolean;
+    };
+    related: {
+      settings?: React.ComponentType<any>;
+    };
+  };
+  propSchema: PropSchema;        // Defines settings panel fields
+}
+
+type PropSchema = Array<{
+  key: string;
+  label: string;
+  type: "string" | "number" | "boolean" | "enum" | "color";
+  defaultValue: any;
+  options?: string[]; // for enum
+}>;
+```
+
+### UText
+
+```typescript
+{
+  displayName: "Text",
+  craft: {
+    props: { text: "Start typing or press '/' for commands...", fontSize: 16, color: "#000000", align: "left" },
+    rules: { canDrag: () => true },
+  },
+  propSchema: [
+    { key: "text", label: "Content", type: "string", defaultValue: "" },
+    { key: "fontSize", label: "Font Size", type: "number", defaultValue: 16 },
+    { key: "color", label: "Color", type: "color", defaultValue: "#000000" },
+    { key: "align", label: "Alignment", type: "enum", defaultValue: "left", options: ["left", "center", "right"] },
+  ],
+}
+```
+
+### UCard
+
+```typescript
+{
+  displayName: "Card",
+  craft: {
+    props: { title: "Card Title", description: "Card description goes here." },
+    rules: { canDrag: () => true },
+  },
+  propSchema: [
+    { key: "title", label: "Title", type: "string", defaultValue: "Card Title" },
+    { key: "description", label: "Description", type: "string", defaultValue: "" },
+  ],
+}
+```
+
+### UButton
+
+```typescript
+{
+  displayName: "Button",
+  craft: {
+    props: { label: "Click me", href: "#", variant: "default" },
+    rules: { canDrag: () => true },
+  },
+  propSchema: [
+    { key: "label", label: "Label", type: "string", defaultValue: "Button" },
+    { key: "href", label: "Link", type: "string", defaultValue: "#" },
+    { key: "variant", label: "Variant", type: "enum", defaultValue: "default", options: ["default", "outline", "ghost"] },
+  ],
+}
+```
+
+### UContainer
+
+```typescript
+{
+  displayName: "Container",
+  craft: {
+    props: { direction: "column", gap: 16, padding: 16 },
+    rules: {
+      canDrag: () => true,
+      canDrop: () => true, // Can receive children
+    },
+  },
+  propSchema: [
+    { key: "direction", label: "Direction", type: "enum", defaultValue: "column", options: ["row", "column"] },
+    { key: "gap", label: "Gap", type: "number", defaultValue: 16 },
+    { key: "padding", label: "Padding", type: "number", defaultValue: 16 },
+  ],
+}
+```
+
+---
+
+## Appendix: File Structure (Target)
+
+```
+bentwo/
+├── app/
+│   ├── layout.tsx              # Root layout, providers
+│   ├── page.tsx                # Landing page
+│   ├── editor/
+│   │   ├── page.tsx            # Editor shell (home page)
+│   │   └── [pageName]/
+│   │       └── page.tsx        # Editor for specific page
+│   ├── [subdomain]/
+│   │   └── page.tsx            # Public site renderer
+│   └── api/
+│       └── site/
+│           └── route.ts        # API: fetch site by subdomain
+│   └── docs/
+│       └── page.tsx            # Docs (TBD / placeholder)
+├── components/
+│   ├── ui/                     # shadcn/ui primitives
+│   │   ├── button.tsx
+│   │   ├── card.tsx
+│   │   ├── input.tsx
+│   │   └── container.tsx
+│   ├── user/                   # Craft.js User Components
+│   │   ├── text.tsx
+│   │   ├── card.tsx
+│   │   ├── button.tsx
+│   │   └── container.tsx
+│   ├── editor/
+│   │   ├── EditorShell.tsx     # Editor layout shell
+│   │   ├── BottomBar.tsx       # Floating bottom bar
+│   │   ├── SettingsPanel.tsx   # Floating props panel
+│   │   ├── SlashCommand.tsx    # / dropdown
+│   │   ├── HoverToolbar.tsx    # Component hover actions
+│   │   └── PageSwitcher.tsx    # Page dropdown
+│   ├── renderer/
+│   │   └── PublicRenderer.tsx  # Read-only tree renderer
+│   └── auth/
+│       ├── AuthModal.tsx       # Sign-in/sign-up
+│       └── GuestBanner.tsx     # "Sign up to save"
+├── hooks/
+│   ├── usePages.ts             # In-memory page state
+│   ├── useAutoSave.ts          # Debounced save logic
+│   └── useSiteSettings.ts      # Site settings query/mutation
+├── lib/
+│   ├── utils.ts                # cn() and helpers
+│   ├── db.ts                   # InstantDB client init
+│   ├── instant.schema.ts       # InstantDB schema
+│   ├── instant.perms.ts        # InstantDB permissions
+│   └── resolver.ts             # Craft.js component resolver
+├── types/
+│   └── index.ts                # Shared types (PropSchema, etc.)
+├── public/
+│   └── favicon.ico
+├── next.config.ts
+├── tailwind.config.ts
+├── tsconfig.json
+└── package.json
+```
 
 ---
 
