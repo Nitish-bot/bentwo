@@ -3,8 +3,8 @@
 import { Editor, Element, Frame } from "@craftjs/core";
 import { UContainer } from "@/components/user/container";
 import { UText } from "@/components/user/text";
-import { resolver } from "@/lib/resolver";
 import { useEditorShortcuts } from "@/hooks/useEditorShortcuts";
+import { resolver } from "@/lib/resolver";
 
 function ShortcutHandler() {
 	useEditorShortcuts();

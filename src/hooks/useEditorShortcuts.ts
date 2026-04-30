@@ -31,10 +31,7 @@ export function useEditorShortcuts() {
 			}
 
 			// Delete / Backspace — remove selected node when not editing text
-			if (
-				(e.key === "Delete" || e.key === "Backspace") &&
-				!isEditingText
-			) {
+			if ((e.key === "Delete" || e.key === "Backspace") && !isEditingText) {
 				const selectedId = query.getEvent("selected").first();
 				if (selectedId) {
 					e.preventDefault();

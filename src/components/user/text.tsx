@@ -26,7 +26,6 @@ export const UText = React.forwardRef<HTMLDivElement, UTextProps>(
 		const editableRef = useRef<HTMLDivElement | null>(null);
 		const prevIsEditingRef = useRef(false);
 
-
 		const {
 			id,
 			connectors: { connect, drag },
@@ -81,8 +80,6 @@ export const UText = React.forwardRef<HTMLDivElement, UTextProps>(
 			}
 		}, [isEditing, text]);
 
-
-
 		const replaceWithComponent = useCallback(
 			(componentType: string) => {
 				const node = query.node(id).get();
@@ -104,9 +101,7 @@ export const UText = React.forwardRef<HTMLDivElement, UTextProps>(
 						<UButton label="Button" />
 					),
 				);
-				const nodeTree = parsed.toNodeTree
-					? parsed.toNodeTree()
-					: parsed;
+				const nodeTree = parsed.toNodeTree ? parsed.toNodeTree() : parsed;
 
 				editorActions.addNodeTree(nodeTree, parentId, index);
 			},
@@ -214,6 +209,7 @@ export const UText = React.forwardRef<HTMLDivElement, UTextProps>(
 
 		return (
 			<div className="relative">
+				{/* biome-ignore lint/a11y/noStaticElementInteractions: Necessary evil */}
 				<div
 					ref={setDomRef}
 					contentEditable={isEditing}
