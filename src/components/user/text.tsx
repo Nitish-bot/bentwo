@@ -25,7 +25,7 @@ export const UText = React.forwardRef<HTMLDivElement, UTextProps>(
 		const [dropdownPos, setDropdownPos] = useState({ top: 0, left: 0 });
 		const editableRef = useRef<HTMLDivElement | null>(null);
 		const prevIsEditingRef = useRef(false);
-		const hasTypedRef = useRef(false);
+
 
 		const {
 			id,
@@ -120,12 +120,9 @@ export const UText = React.forwardRef<HTMLDivElement, UTextProps>(
 			// innerText preserves line breaks from <br> and block elements
 			const currentText = el.innerText ?? "";
 
-			if (currentText.length > 0) {
-				hasTypedRef.current = true;
-				setProp((props: Record<string, unknown>) => {
-					props.text = currentText;
-				});
-			}
+			setProp((props: Record<string, unknown>) => {
+				props.text = currentText;
+			});
 
 			const lastSlashIndex = currentText.lastIndexOf("/");
 			if (lastSlashIndex !== -1) {

@@ -51,7 +51,10 @@ export const SlashCommand = React.forwardRef<
 				<button
 					key={item.id}
 					type="button"
-					onClick={() => onSelect(item)}
+					onMouseDown={(e) => {
+						e.preventDefault();
+						onSelect(item);
+					}}
 					className={cn(
 						"flex w-full items-center gap-2 px-2 py-1.5 text-sm transition-colors",
 						"hover:bg-accent hover:text-accent-foreground",
