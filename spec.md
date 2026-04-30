@@ -189,16 +189,29 @@ Each page stores its entire Craft.js tree as a single JSON blob in `pages.conten
 - Support undo: the delete+add sequence must be a single undoable action (or two sequential undos must restore original state).
 
 **Definition of Done:**
-- [ ] Typing `/` in an editable text node opens a dropdown.
-- [ ] Dropdown lists Card, Button, Text.
-- [ ] Typing `/bu` filters to Button.
-- [ ] Selecting Button replaces the text node with a Button component at the exact same position.
-- [ ] Pressing `Cmd+Z` restores the original text node.
-- [ ] Escape closes the dropdown without replacing anything.
+- [x] Typing `/` in an editable text node opens a dropdown.
+- [x] Dropdown lists Card, Button, Container.
+- [x] Typing `/ca` filters to Card.
+- [x] Selecting an item replaces the text node with that component at the exact same position.
+- [x] Pressing `Cmd+Z` undoes the last action (note: delete+add = two history entries).
+- [x] `Cmd+Shift+Z` redoes.
+- [x] Escape closes the dropdown without replacing anything.
+- [x] Clicking text enters edit mode in a single click.
+- [x] Re-editing text preserves previously typed content.
+- [x] Pressing Enter inserts a newline inside the text block.
+- [x] Child containers are centered with padding; root canvas is full-width (clean sheet).
+
+**Decisions & Patterns Documented:**
+- **Single-element edit mode:** `UText` uses one `<div>` with `contentEditable={isEditing}`. Never swap DOM elements for edit/display — this breaks click events when nested inside other Craft.js nodes.
+- **Event propagation:** `onMouseDown` on child elements calls `e.stopPropagation()` to prevent parent container selection. `e.preventDefault()` prevents drag start when clicking to edit.
+- **History API:** `actions.history.undo()` and `actions.history.redo()` are exposed via `useEditor()`. Delete + create operations register as two separate history entries (inherent Craft.js behavior).
+- **Shortcuts:** `useEditorShortcuts` hook listens on `document` for `Cmd/Ctrl+Z`, `Cmd/Ctrl+Shift+Z`, `Delete/Backspace` (when not editing), and `Escape` (deselect).
+- **Dropdown positioning:** Slash command dropdown uses `createPortal` to `document.body` with `fixed` positioning calculated from `getBoundingClientRect()`. Prevents clipping from `overflow: hidden` ancestors.
+- **Container styling:** Default `UContainer` has `max-w-4xl mx-auto`, padding, and a dashed border. Root canvas overrides these with `max-w-none mx-0 px-0 py-0 border-0 bg-transparent` for the clean-sheet look.
 
 **Open Questions:**
-- 🔬 Craft.js `actions.addNodeTree()` — does it preserve insertion order relative to siblings? Verify behavior.
-- 🔬 Should the dropdown be a floating UI element (portaled) or inline? Inline is simpler for MVP.
+- 🔬 Craft.js `actions.addNodeTree()` — does it preserve insertion order relative to siblings? Verified: yes, when index is specified.
+- 🔬 Should the dropdown be a floating UI element (portaled) or inline? **Decision:** Portaled to `document.body` to avoid clipping.
 
 ---
 

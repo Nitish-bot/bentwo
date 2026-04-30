@@ -133,4 +133,51 @@ These patterns were validated against a working Craft.js + Next.js reference imp
 
 ---
 
+## 8. Phase 2 Implementation Patterns (Slash Command + Editing)
+
+### Single-Element Edit Mode
+
+**Components with inline editing MUST use a single DOM element.**
+
+- Toggle `contentEditable={isEditing}` on one persistent `<div>`.
+- Never render separate edit/display elements — React element swaps break click events, especially when nested inside other Craft.js nodes that also handle mouse events.
+- The same DOM node persists across mode changes, so `ref` callbacks and event listeners remain stable.
+- Sync saved text into the element via `useEffect` when transitioning into edit mode, then call `.focus()` immediately.
+
+### Event Propagation in Nested Nodes
+
+**Child element interactions must call `e.stopPropagation()` to prevent parent selection.**
+
+- Craft.js attaches `mousedown` listeners to every node for selection. Without `stopPropagation()`, clicking on text inside a container selects the container too.
+- Use `e.preventDefault()` on `mousedown` to prevent HTML5 drag initiation when clicking draggable elements to enter edit mode.
+- Pattern: `onMouseDown` handler checks `if (!isEditing) { e.stopPropagation(); e.preventDefault(); setIsEditing(true); }`
+
+### History API
+
+**Craft.js exposes undo/redo via `actions.history`.**
+
+- `actions.history.undo()` and `actions.history.redo()` are available on the object returned by `useEditor()`.
+- `actions.history.throttle(ms).setProp()` batches rapid prop changes into single history entries.
+- `actions.history.ignore().delete()` excludes an action from history entirely.
+- Delete + create operations naturally register as two separate history entries. This is inherent Craft.js behavior.
+
+### Global Shortcuts
+
+**Use a `useEditorShortcuts` hook attached to the `<Editor>` tree.**
+
+- Listen on `document` for `keydown` events.
+- Check if the active element is inside `[contenteditable="true"]` before firing node-level shortcuts.
+- Map: `Cmd/Ctrl+Z` → undo, `Cmd/Ctrl+Shift+Z` → redo, `Delete/Backspace` → delete selected node (when not editing), `Escape` → deselect.
+- Always `e.preventDefault()` for shortcuts that fire, to avoid browser defaults (e.g., browser back on Backspace).
+
+### Portal-Based Dropdowns
+
+**Floating UI elements (slash command, toolbars) must use `createPortal` to `document.body`.**
+
+- Inline dropdowns get clipped by `overflow: hidden` or `transform` on parent containers.
+- Position via `getBoundingClientRect()` + `window.scrollX/Y` for accurate placement.
+- Use `z-[9999]` or higher to ensure visibility above all editor chrome.
+
+---
+
 **These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.
